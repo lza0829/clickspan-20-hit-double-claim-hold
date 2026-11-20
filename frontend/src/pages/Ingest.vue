@@ -27,5 +27,8 @@ async function run() {
     <button class="btn" :disabled="busy" @click="run">{{ busy ? '收流中…' : '跑一批收流' }}</button>
     <p v-if="err" class="err">{{ err }}</p>
     <pre v-if="result" class="mono">{{ result }}</pre>
+    <p v-if="result?.report?.held" class="err">
+      本批 {{ result.report.held }} 个击点因 hit_id 双占被搁置，正式通道未写入、原会话成员不变，详见「搁置 / 核证」。
+    </p>
   </section>
 </template>

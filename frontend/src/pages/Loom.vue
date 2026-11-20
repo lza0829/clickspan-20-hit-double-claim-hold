@@ -32,6 +32,7 @@ onMounted(load)
       <div class="stat"><b>{{ overview.sessions }}</b><span>会话</span></div>
       <div class="stat"><b>{{ overview.hits_primary }}</b><span>正式击点</span></div>
       <div class="stat"><b>{{ overview.quarantine }}</b><span>隔离</span></div>
+      <div class="stat"><b>{{ overview.double_claim_holds ?? 0 }}</b><span>双占搁置</span></div>
       <div class="stat"><b>{{ overview.idle_timeout_sec }}s</b><span>空闲超时</span></div>
     </div>
     <p v-if="err" class="err">{{ err }}</p>

@@ -3,13 +3,19 @@ import uuid
 from datetime import datetime, timezone
 
 from app.db import FIXTURES_DIR, connect
+from app.modules import hit_double_claim_hold as hdch
 
 
-def run_batch() -> dict:
-    """基座装载：按夹具追加击点；超时切会话 / 脏点隔离留给功能题空桩。"""
-    path = FIXTURES_DIR / "ingest_batch.json"
+def run_batch(fixture_path=None) -> dict:
+    """收流：按夹具追加击点。
+
+    hit_id 争用裁决（hit_double_claim_hold，失败闭路径 A）：
+    入口按 hit_id 查占用 -> 已占用则同事务写双占搁置、正式通道不动；
+    未占用才正式入会并做成员物化（计数 / 证明）。
+    """
+    path = fixture_path or (FIXTURES_DIR / "ingest_batch.json")
     if not path.exists():
-        return {"ok": False, "error": "缺少 ingest_batch.json"}
+        return {"ok": False, "error": f"缺少夹具 {path}"}
     payload = json.loads(path.read_text(encoding="utf-8"))
     batch_id = payload.get("batch_id") or f"B-{uuid.uuid4().hex[:8]}"
     hits = payload.get("hits", [])
@@ -18,6 +24,7 @@ def run_batch() -> dict:
     try:
         conn.execute("BEGIN IMMEDIATE")
         written = 0
+        held = []
         for hit in hits:
             vid = hit["visitor_id"]
             exists = conn.execute("SELECT 1 FROM visitors WHERE id=?", (vid,)).fetchone()
@@ -46,60 +53,67 @@ def run_batch() -> dict:
                     """,
                     (sid, vid, hit["event_ts"], hit["event_ts"]),
                 )
+
+            # 入口裁决：已被任一会话占用 -> 搁置，正式通道不动；否则正式写入。
+            verdict = hdch.settle_hit(conn, hit=hit, target_session_id=sid, batch_id=batch_id)
+            if verdict["outcome"] == "held":
+                held.append(
+                    {
+                        "hit_id": verdict["hit_id"],
+                        "reason": verdict["reason"],
+                        "claim_session_id": verdict["claim_session_id"],
+                        "conflict_session_id": verdict["conflict_session_id"],
+                    }
+                )
+                # 不得从旧会话撕走、不得给新会话加成员：sessions /
+                # session_proofs 一律不动，直接处理下一条。
+                continue
+
+            written += 1
             conn.execute(
                 """
-                INSERT OR IGNORE INTO hits(id, visitor_id, session_id, event_ts, page_path, event_name, channel)
-                VALUES (?,?,?,?,?,?, 'primary')
+                UPDATE sessions
+                SET hit_count = hit_count + 1,
+                    ended_at = CASE
+                      WHEN ended_at IS NULL OR ended_at < ? THEN ?
+                      ELSE ended_at END
+                WHERE id=?
+                """,
+                (hit["event_ts"], hit["event_ts"], sid),
+            )
+            ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM hits WHERE session_id=? ORDER BY event_ts, id",
+                    (sid,),
+                ).fetchall()
+            ]
+            sess_row = conn.execute(
+                "SELECT * FROM sessions WHERE id=?", (sid,)
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO session_proofs(
+                  session_id, visitor_id, hit_ids_json, hit_count, started_at, ended_at, created_at
+                ) VALUES (?,?,?,?,?,?,?)
                 """,
                 (
-                    hit["id"],
-                    vid,
                     sid,
-                    hit["event_ts"],
-                    hit["page_path"],
-                    hit["event_name"],
+                    vid,
+                    json.dumps(ids, ensure_ascii=False),
+                    sess_row["hit_count"],
+                    sess_row["started_at"],
+                    sess_row["ended_at"],
+                    _now(),
                 ),
             )
-            if conn.execute("SELECT changes()").fetchone()[0]:
-                written += 1
-                conn.execute(
-                    """
-                    UPDATE sessions
-                    SET hit_count = hit_count + 1,
-                        ended_at = CASE
-                          WHEN ended_at IS NULL OR ended_at < ? THEN ?
-                          ELSE ended_at END
-                    WHERE id=?
-                    """,
-                    (hit["event_ts"], hit["event_ts"], sid),
-                )
-                ids = [
-                    r["id"]
-                    for r in conn.execute(
-                        "SELECT id FROM hits WHERE session_id=? ORDER BY event_ts, id",
-                        (sid,),
-                    ).fetchall()
-                ]
-                sess_row = conn.execute(
-                    "SELECT * FROM sessions WHERE id=?", (sid,)
-                ).fetchone()
-                conn.execute(
-                    """
-                    INSERT INTO session_proofs(
-                      session_id, visitor_id, hit_ids_json, hit_count, started_at, ended_at, created_at
-                    ) VALUES (?,?,?,?,?,?,?)
-                    """,
-                    (
-                        sid,
-                        vid,
-                        json.dumps(ids, ensure_ascii=False),
-                        sess_row["hit_count"],
-                        sess_row["started_at"],
-                        sess_row["ended_at"],
-                        _now(),
-                    ),
-                )
-        report = {"batch_id": batch_id, "written": written, "input": len(hits)}
+        report = {
+            "batch_id": batch_id,
+            "written": written,
+            "held": len(held),
+            "input": len(hits),
+            "double_claims": held,
+        }
         conn.execute(
             "INSERT OR REPLACE INTO ingest_batches(id, created_at, report_json) VALUES (?,?,?)",
             (batch_id, _now(), json.dumps(report, ensure_ascii=False)),

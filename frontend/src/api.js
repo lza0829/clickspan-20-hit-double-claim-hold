@@ -18,6 +18,10 @@ export const api = {
     req(visitorId ? `/api/sessions?visitor_id=${encodeURIComponent(visitorId)}` : '/api/sessions'),
   session: (id) => req(`/api/sessions/${encodeURIComponent(id)}`),
   quarantine: () => req('/api/quarantine'),
+  doubleClaims: (params = {}) => {
+    const q = new URLSearchParams(params).toString()
+    return req(q ? `/api/double-claims?${q}` : '/api/double-claims')
+  },
   ingest: () => req('/api/ingest/run', { method: 'POST' }),
   proofs: (sessionId) =>
     req(sessionId ? `/api/session-proofs?session_id=${encodeURIComponent(sessionId)}` : '/api/session-proofs'),

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# 本地数据库 / 数据
+backend/data/
+*.db
+
+# Node / 前端构建
+node_modules/
+dist/

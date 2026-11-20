@@ -1,6 +1,7 @@
 import json
 
 from app.db import FIXTURES_DIR, connect
+from app.modules import hit_double_claim_hold
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -64,6 +65,8 @@ CREATE TABLE IF NOT EXISTS session_proofs (
 def init_db():
     conn = connect()
     conn.executescript(SCHEMA)
+    # 功能题：hit_id 跨会话双占搁置表 + 改挂拒绝触发器
+    hit_double_claim_hold.init_schema(conn)
     row = conn.execute("SELECT value FROM settings WHERE key='idle_timeout_sec'").fetchone()
     if not row:
         conn.execute(
